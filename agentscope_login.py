@@ -1,223 +1,137 @@
-#!/usr/bin/env python3
-"""
-使用 Cookie 自动登录 https://platform.agentscope.io/ 并点击“打开 QwenPaw”按钮
-增强登录状态检查，支持多种按钮文本。
-环境变量：
-  AGENTSCOPE_COOKIE  - 登录后的 Cookie 字符串（必填）
-  AGENTSCOPE_HEADLESS - 是否无头模式（默认 true）
-  TG_BOT_TOKEN       - Telegram Bot Token（可选）
-  TG_CHAT_ID         - Telegram Chat ID（可选）
-  LOGIN_SUCCESS_INDICATOR - 登录后页面的 CSS 选择器（可选）
-"""
+# agentscope_login.py
+import os, sys, json, base64, time, requests
+from playwright.sync_api import sync_playwright
+from datetime import datetime
 
-import os
-import sys
-import time
-import requests
-from datetime import datetime, timezone
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+STATE_B64 = os.getenv("AGENTSCOPE_STATE", "")
+HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
+TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
+TG_CHAT = os.getenv("TG_CHAT_ID", "")
 
-# ---------- 配置 ----------
-COOKIE_STR = os.getenv("AGENTSCOPE_COOKIE", "")
-HEADLESS = os.getenv("AGENTSCOPE_HEADLESS", "true").lower() == "true"
-LOGIN_URL = "https://platform.agentscope.io/"
-TARGET_BUTTON_TEXTS = ["打开 QwenPaw", "QwenPaw", "Launch QwenPaw", "Open QwenPaw"]
-LOGIN_SUCCESS_INDICATOR = os.getenv("LOGIN_SUCCESS_INDICATOR", "")  # 例如 ".user-avatar"
+# 从抓包信息中确定的正确刷新接口
+REFRESH_URL = "https://platform.agentscope.io/api/v1/auth/refresh"
 
-TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
-TG_CHAT_ID   = os.getenv("TG_CHAT_ID", "")
+def log(msg):
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
 
-# ---------- 日志 ----------
-def log(level: str, msg: str):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] [{level}] {msg}", flush=True)
-
-# ---------- Telegram 通知 ----------
-def send_telegram(message: str) -> bool:
-    if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        return False
-    try:
-        url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-        data = {"chat_id": TG_CHAT_ID, "text": message, "parse_mode": "HTML"}
-        resp = requests.post(url, json=data, timeout=30)
-        resp.raise_for_status()
-        log("INFO", "Telegram 消息发送成功")
-        return True
-    except Exception as e:
-        log("ERROR", f"Telegram 发送失败: {e}")
-        return False
-
-# ---------- 解析 Cookie ----------
-def parse_cookie_string(cookie_str: str, domain: str = "platform.agentscope.io"):
-    cookies = []
-    for item in cookie_str.split(';'):
-        item = item.strip()
-        if not item or '=' not in item:
-            continue
-        key, value = item.split('=', 1)
-        cookies.append({
-            "name": key.strip(),
-            "value": value.strip(),
-            "domain": domain,
-            "path": "/",
-            "httpOnly": False,
-            "secure": False,
-            "sameSite": "Lax"
-        })
-    return cookies
-
-# ---------- 检查 Cookie 过期 ----------
-def check_cookie_expiry_from_browser(context):
-    all_cookies = context.cookies()
-    now = datetime.now(tz=timezone.utc)
-    for c in all_cookies:
-        if 'expires' in c and c['expires']:
-            expiry_ts = c['expires']
-            expiry_dt = datetime.fromtimestamp(expiry_ts, tz=timezone.utc)
-            remaining = expiry_dt - now
-            days = remaining.total_seconds() / 86400
-            log("INFO", f"Cookie '{c['name']}' 过期时间: {expiry_dt.astimezone().strftime('%Y-%m-%d %H:%M:%S')} (剩余 {days:.1f} 天)")
-            if days < 3:
-                log("WARN", f"⚠️ Cookie '{c['name']}' 将在 {days:.1f} 天后过期，请及时更新")
-
-# ---------- 增强版登录状态检查 ----------
-def check_login_status(page) -> bool:
-    """返回 True 表示已登录，False 表示未登录"""
-    # 1. 检查是否存在“登录”按钮（未登录标志）
-    login_btn = page.locator(
-        "button:has-text('登录'), button:has-text('Sign in'), "
-        "a:has-text('登录'), a:has-text('Sign in'), "
-        "button:has-text('Login'), a:has-text('Login')"
-    )
-    if login_btn.count() and login_btn.is_visible():
-        log("WARN", "检测到 '登录' 按钮，当前未登录")
-        return False
-
-    # 2. 自定义登录成功标志
-    if LOGIN_SUCCESS_INDICATOR:
+def send_tg(msg):
+    if TG_TOKEN and TG_CHAT:
         try:
-            page.wait_for_selector(LOGIN_SUCCESS_INDICATOR, timeout=5000)
-            log("INFO", "✅ 检测到自定义登录成功标志元素")
-            return True
-        except PlaywrightTimeoutError:
-            log("WARN", "未找到自定义登录成功标志元素")
+            requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                          json={"chat_id": TG_CHAT, "text": msg, "parse_mode": "HTML"}, timeout=10)
+        except Exception as e:
+            log(f"Telegram 发送失败: {e}")
 
-    # 3. URL 是否包含登录路径
-    current_url = page.url.lower()
-    if "/login" in current_url or "/signin" in current_url:
-        log("WARN", f"当前 URL 包含登录路径: {current_url}")
-        return False
+def refresh_token(refresh_token_str, cookie_value):
+    """
+    调用正确的刷新接口
+    - refresh_token_str: refreshToken 的值
+    - cookie_value: qwenpaw_console_token 的值（从浏览器 Cookie 中获取）
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "Cookie": f"qwenpaw_console_token={cookie_value}",
+        "Origin": "https://platform.agentscope.io",
+        "Referer": "https://platform.agentscope.io/",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+    }
+    payload = {"refreshToken": refresh_token_str}
+    
+    try:
+        resp = requests.post(REFRESH_URL, json=payload, headers=headers, timeout=15)
+        log(f"刷新接口响应状态: {resp.status_code}")
+        if resp.status_code == 200:
+            data = resp.json()
+            # 根据实际响应格式调整字段名（常见可能是 accessToken 或 access_token）
+            new_token = data.get("accessToken") or data.get("access_token") or data.get("token")
+            expires = data.get("expiresIn") or data.get("expires_in") or 3600
+            if new_token:
+                return new_token, expires
+            else:
+                log(f"响应中未找到 token，完整响应: {data}")
+                raise Exception("刷新响应中无 token 字段")
+        else:
+            raise Exception(f"刷新失败 HTTP {resp.status_code}: {resp.text[:200]}")
+    except Exception as e:
+        raise Exception(f"刷新请求异常: {e}")
 
-    # 4. 检查密码输入框
-    password_input = page.locator("input[type='password']")
-    if password_input.count():
-        log("WARN", "页面存在密码输入框，可能未登录")
-        return False
+def get_cookie_from_state(state):
+    """从 state 中提取 qwenpaw_console_token"""
+    cookies = state.get("cookies", [])
+    for c in cookies:
+        if c.get("name") == "qwenpaw_console_token":
+            return c.get("value")
+    return None
 
-    # 5. 检查页面是否有“退出”按钮（有则说明已登录）
-    logout_btn = page.locator("button:has-text('退出'), button:has-text('Logout'), a:has-text('退出'), a:has-text('Logout')")
-    if logout_btn.count() and logout_btn.is_visible():
-        log("INFO", "✅ 检测到退出按钮，已登录")
-        return True
-
-    # 6. 兜底：如果页面文本包含“登录”且无“退出”，认为未登录
-    body_text = page.text_content("body").lower()
-    if ("登录" in body_text or "sign in" in body_text) and not logout_btn.count():
-        log("WARN", "页面包含登录字样且无退出按钮，可能未登录")
-        return False
-
-    log("INFO", "✅ 综合判断已登录")
-    return True
-
-# ---------- 主函数 ----------
 def run():
-    log("INFO", "启动 Agentscope Cookie 自动登录脚本 (增强检查)...")
-    if not COOKIE_STR:
-        log("ERROR", "请设置环境变量 AGENTSCOPE_COOKIE")
+    if not STATE_B64:
+        log("❌ 缺少 AGENTSCOPE_STATE，请在 GitHub Secret 中设置")
+        sys.exit(1)
+    try:
+        state_json = base64.b64decode(STATE_B64).decode()
+        state = json.loads(state_json)
+    except Exception as e:
+        log(f"❌ 解码状态失败: {e}")
         sys.exit(1)
 
+    # 提取 Cookie（刷新时需要）
+    cookie_value = get_cookie_from_state(state)
+    if not cookie_value:
+        log("⚠️ 未找到 qwenpaw_console_token，刷新可能失败")
+
     with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=HEADLESS,
-            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-        )
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 720},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-
-        cookies = parse_cookie_string(COOKIE_STR, domain="platform.agentscope.io")
-        log("INFO", f"添加 {len(cookies)} 个 Cookie")
-        context.add_cookies(cookies)
-
+        browser = p.chromium.launch(headless=HEADLESS, args=["--no-sandbox"])
+        context = browser.new_context(storage_state=state)
         page = context.new_page()
-        try:
-            log("INFO", f"正在访问 {LOGIN_URL}")
-            page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
+        log("🌐 访问平台...")
+        page.goto("https://platform.agentscope.io/", wait_until="domcontentloaded")
+        time.sleep(2)
 
-            # 等待页面稳定
-            page.wait_for_timeout(3000)
+        # 检查是否已登录（是否存在“登录”按钮）
+        login_btn = page.locator("button:has-text('登录')")
+        if login_btn.count() and login_btn.is_visible():
+            log("⚠️ 检测到登录按钮，尝试刷新 token...")
+            # 从 localStorage 获取 refreshToken
+            refresh = page.evaluate("() => localStorage.getItem('refreshToken')")
+            if not refresh:
+                raise Exception("本地没有 refreshToken，请重新导出状态")
+            if not cookie_value:
+                raise Exception("没有 qwenpaw_console_token，无法刷新")
+            try:
+                new_token, expires = refresh_token(refresh, cookie_value)
+                # 更新 localStorage
+                page.evaluate(f"window.localStorage.setItem('accessToken', '{new_token}')")
+                page.evaluate(f"window.localStorage.setItem('expiresIn', '{expires}')")
+                log(f"✅ token 刷新成功，有效期 {expires} 秒")
+                page.reload()
+                time.sleep(2)
+                # 再次检查登录状态
+                if page.locator("button:has-text('登录')").count():
+                    raise Exception("刷新后仍显示登录按钮，可能 refreshToken 无效")
+                log("✅ 刷新后登录成功")
+            except Exception as e:
+                send_tg(f"❌ Agentscope 自动刷新失败\n错误: {e}")
+                raise
+        else:
+            log("✅ 已登录")
 
-            # 检查 Cookie 过期
-            check_cookie_expiry_from_browser(context)
+        # 点击目标按钮
+        for text in ["打开 QwenPaw", "QwenPaw", "Launch QwenPaw"]:
+            btn = page.locator(f"button:has-text('{text}'), a:has-text('{text}')")
+            if btn.count():
+                btn.first.click()
+                log(f"✅ 点击 '{text}' 成功")
+                break
+        else:
+            raise Exception("未找到目标按钮")
 
-            # 登录状态检查
-            if not check_login_status(page):
-                page.screenshot(path="login_failed.png")
-                raise RuntimeError("登录状态检查失败：Cookie 无效或已过期")
-
-            # 尝试点击目标按钮（多种文本）
-            clicked = False
-            for text in TARGET_BUTTON_TEXTS:
-                try:
-                    btn = page.wait_for_selector(
-                        f"button:has-text('{text}'), a:has-text('{text}'), "
-                        f"div:has-text('{text}') >> button, [role='button']:has-text('{text}')",
-                        timeout=3000
-                    )
-                    if btn and btn.is_visible():
-                        btn.click()
-                        log("INFO", f"✅ 成功点击 '{text}'")
-                        clicked = True
-                        break
-                except PlaywrightTimeoutError:
-                    continue
-            if not clicked:
-                # 输出页面部分内容辅助调试
-                page.screenshot(path="button_not_found.png")
-                body_preview = page.text_content("body")[:500]
-                log("ERROR", f"未找到任何匹配按钮，页面预览: {body_preview}")
-                raise RuntimeError("未找到目标按钮")
-
-            # 等待可能的跳转/新窗口
-            time.sleep(3)
-            log("INFO", "✅ 脚本执行成功")
-
-            send_telegram(
-                f"✅ <b>Agentscope 自动操作成功</b>\n"
-                f"🍪 使用 Cookie 登录\n"
-                f"⏱️ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"📋 已点击目标按钮"
-            )
-
-        except Exception as e:
-            log("ERROR", f"执行异常: {e}")
-            page.screenshot(path="error_screenshot.png")
-            send_telegram(
-                f"❌ <b>Agentscope 自动操作失败</b>\n"
-                f"⏱️ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"📝 错误: {e}"
-            )
-            raise
-        finally:
-            browser.close()
+        log("🎉 脚本执行完毕")
+        send_tg("✅ Agentscope 自动操作成功")
 
 if __name__ == "__main__":
     try:
         run()
-    except KeyboardInterrupt:
-        log("WARN", "用户中断")
-        sys.exit(130)
     except Exception as e:
-        log("ERROR", f"脚本失败: {e}")
+        log(f"❌ 执行失败: {e}")
+        send_tg(f"❌ Agentscope 脚本失败: {e}")
         sys.exit(1)
