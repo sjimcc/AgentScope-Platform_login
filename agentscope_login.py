@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-多账号脚本，支持逗号分隔的按钮文本列表
+多账号脚本，支持逗号分隔的按钮文本列表，并生成详细 Telegram 报告
 """
 import os
 import sys
@@ -14,7 +14,6 @@ HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TG_CHAT_ID", "")
 
-# 读取环境变量并分割为列表
 DEPLOY_RAW = os.getenv("BUTTON_DEPLOY", "一键部署QwenPaw")
 DEPLOY_TEXTS = [t.strip() for t in DEPLOY_RAW.split(',') if t.strip()]
 
@@ -27,10 +26,11 @@ def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
 
 def send_tg(msg):
+    """发送 Telegram 消息（纯文本，不使用 HTML）"""
     if TG_TOKEN and TG_CHAT:
         try:
             requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                          json={"chat_id": TG_CHAT, "text": msg, "parse_mode": "HTML"}, timeout=10)
+                          json={"chat_id": TG_CHAT, "text": msg}, timeout=10)
         except Exception as e:
             log(f"Telegram 发送失败: {e}")
 
@@ -56,9 +56,6 @@ def wait_for_token(page, timeout=60000):
     return False
 
 def click_button_multitext(page, button_texts, timeout_per_text=15000, total_timeout=60000):
-    """
-    依次尝试多个按钮文本，找到第一个可见的并点击。
-    """
     start_time = time.time()
     for text in button_texts:
         remaining = total_timeout - (time.time() - start_time) * 1000
@@ -86,7 +83,6 @@ def click_button_multitext(page, button_texts, timeout_per_text=15000, total_tim
         except PlaywrightTimeoutError:
             log(f"⏳ 未找到 '{text}'，继续尝试下一个...")
             continue
-    # 全部失败
     log(f"❌ 所有文本均未找到或点击失败：{button_texts}")
     buttons = page.locator("button, a[role='button'], [role='button']")
     count = buttons.count()
@@ -149,7 +145,7 @@ def process_account(username, password, account_index):
             page.wait_for_load_state("networkidle", timeout=10000)
             time.sleep(3)
 
-            # 1. 点击第一个按钮（使用 DEPLOY_TEXTS 列表）
+            # 1. 点击第一个按钮（部署）
             log(f"🔍 尝试点击 {DEPLOY_TEXTS} ...")
             if not click_button_multitext(page, DEPLOY_TEXTS, timeout_per_text=30000, total_timeout=30000):
                 screenshot(page, f"07_deploy_failed_{account_index}")
@@ -159,7 +155,7 @@ def process_account(username, password, account_index):
             time.sleep(15)
             page.wait_for_load_state("networkidle", timeout=10000)
 
-            # 2. 点击第二个按钮（使用 QWEN_TEXTS 列表）
+            # 2. 点击第二个按钮（打开 QwenPaw）
             log(f"🔍 尝试点击 {QWEN_TEXTS} ...")
             if not click_button_multitext(page, QWEN_TEXTS, timeout_per_text=15000, total_timeout=60000):
                 screenshot(page, f"08_qwen_failed_{account_index}")
@@ -193,26 +189,58 @@ def run():
             sys.exit(1)
         accounts = [{"username": username, "password": password}]
 
-    success_count = 0
-    fail_count = 0
+    # 收集每个账号的处理结果
+    account_results = []
     for idx, cred in enumerate(accounts, start=1):
         username = cred.get("username")
         password = cred.get("password")
         if not username or not password:
             log(f"⚠️ 账号 {idx} 缺少用户名或密码，跳过")
             continue
-        if process_account(username, password, idx):
-            success_count += 1
-        else:
-            fail_count += 1
-        time.sleep(2)
 
-    log(f"处理完成：成功 {success_count} 个，失败 {fail_count} 个")
+        # 记录开始时间并执行
+        start_time = datetime.now()
+        success = process_account(username, password, idx)
+        end_time = datetime.now()
+
+        status_text = "✅ 成功" if success else "❌ 失败"
+        account_results.append({
+            "username": username,
+            "time": end_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "status": status_text,
+            "success": success
+        })
+        time.sleep(2)  # 账号之间间隔
+
+    # 统计
+    total = len(account_results)
+    success_count = sum(1 for r in account_results if r["success"])
+    fail_count = total - success_count
+    success_rate = (success_count / total * 100) if total > 0 else 0
+
+    # 构建 Telegram 消息
+    lines = []
+    lines.append("📨 Agentscope 多账号任务报告")
+    lines.append("")
+    for r in account_results:
+        lines.append(f"🖥️ 平台: Agentscope")
+        lines.append(f"👤 账号: {r['username']}")
+        lines.append(f"⏰ 时间: {r['time']}")
+        lines.append(r["status"])
+        lines.append("")
+    lines.append("📊 统计信息:")
+    lines.append(f"✅ 成功: {success_count}/{total}")
+    lines.append(f"📈 成功率: {success_rate:.1f}%")
+    lines.append("🏁 所有账号操作已完成")
+
+    message = "\n".join(lines)
+    log("📤 发送 Telegram 汇总报告...")
+    send_tg(message)
+
+    # 根据结果决定退出码
     if fail_count > 0:
-        send_tg(f"❌ Agentscope 多账号处理完成，但 {fail_count} 个账号失败")
         sys.exit(1)
     else:
-        send_tg(f"✅ Agentscope 所有 {success_count} 个账号处理成功")
         sys.exit(0)
 
 if __name__ == "__main__":
