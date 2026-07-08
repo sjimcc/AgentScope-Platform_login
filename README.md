@@ -25,3 +25,7 @@ TG_BOT_TOKEN: 1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
 TG_CHAT_ID: -123456789
 
 LOGIN_SUCCESS_INDICATOR: .user-avatar（若不需要可留空）
+
+
+<img width="1046" height="344" alt="image" src="https://github.com/user-attachments/assets/0fe40087-63c3-4475-8cd2-be8400a17dc3" />
+
