@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-多账号脚本，依次匹配 "打开QWENPAW" 和 "Open QWENPAW"，无备选回退
+多账号脚本，自动匹配 "打开QWENPAW"、"打开 QWENPAW"、"Open QWENPAW" 等变体。
 """
 import os
 import sys
@@ -14,12 +14,13 @@ HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 TG_CHAT = os.getenv("TG_CHAT_ID", "")
 BUTTON_DEPLOY = os.getenv("BUTTON_DEPLOY", "一键部署QwenPaw")
-# BUTTON_QWENPAW 可设置为多个文本，用逗号分隔，默认匹配两个
-BUTTON_QWENPAW = os.getenv("BUTTON_QWENPAW", "打开QWENPAW,Open QWENPAW")
+BUTTON_QWENPAW_ENV = os.getenv("BUTTON_QWENPAW", "打开QWENPAW,Open QWENPAW")
 LOGIN_URL = "https://platform.agentscope.io/login"
 
-# 将 BUTTON_QWENPAW 解析为列表
-QWENPAW_TEXTS = [t.strip() for t in BUTTON_QWENPAW.split(',') if t.strip()]
+# 构建要尝试的 QwenPaw 按钮文本列表（自动补充带空格的版本）
+qwenvars = [t.strip() for t in BUTTON_QWENPAW_ENV.split(',') if t.strip()]
+additional = ["打开 QWENPAW", "Open QWENPAW"]
+QWENPAW_TEXTS = list(dict.fromkeys(qwenvars + additional))  # 去重保留顺序
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
@@ -54,10 +55,6 @@ def wait_for_token(page, timeout=60000):
     return False
 
 def click_button_multitext(page, button_texts, timeout_per_text=15000, total_timeout=60000):
-    """
-    依次尝试多个按钮文本，找到第一个可见的并点击。
-    每个文本尝试 timeout_per_text 毫秒，总超时 total_timeout 毫秒。
-    """
     start_time = time.time()
     for text in button_texts:
         remaining = total_timeout - (time.time() - start_time) * 1000
@@ -85,9 +82,7 @@ def click_button_multitext(page, button_texts, timeout_per_text=15000, total_tim
         except PlaywrightTimeoutError:
             log(f"⏳ 未找到 '{text}'，继续尝试下一个...")
             continue
-    # 全部失败
     log(f"❌ 所有文本均未找到或点击失败：{button_texts}")
-    # 打印按钮列表帮助调试
     buttons = page.locator("button, a[role='button'], [role='button']")
     count = buttons.count()
     if count > 0:
@@ -159,7 +154,7 @@ def process_account(username, password, account_index):
             time.sleep(15)
             page.wait_for_load_state("networkidle", timeout=10000)
 
-            # 2. 点击第二个按钮（尝试多个文本）
+            # 2. 点击第二个按钮（自动包含带空格的版本）
             log(f"🔍 尝试点击 {QWENPAW_TEXTS} ...")
             if not click_button_multitext(page, QWENPAW_TEXTS, timeout_per_text=15000, total_timeout=60000):
                 screenshot(page, f"08_qwen_failed_{account_index}")
