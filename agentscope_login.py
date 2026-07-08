@@ -232,6 +232,7 @@ def run():
     lines.append(f"✅ 成功: {success_count}/{total}")
     lines.append(f"📈 成功率: {success_rate:.1f}%")
     lines.append("🏁 所有账号操作已完成")
+    lines.append("https://platform.agentscope.io")
 
     message = "\n".join(lines)
     log("📤 发送 Telegram 汇总报告...")
