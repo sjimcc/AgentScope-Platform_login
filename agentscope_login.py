@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-用户名/密码登录，通过检测 localStorage 中的 accessToken 判断登录成功。
-不再依赖页面按钮文本匹配，无视字体和渲染问题。
+使用 Enter 键提交登录，更可靠。
 """
 import os
 import sys
@@ -40,17 +39,14 @@ def screenshot(page, name):
         log(f"截图失败 {name}: {e}")
 
 def wait_for_token(page, timeout=60000):
-    """
-    等待 localStorage 中出现 accessToken
-    """
     start = time.time()
     while (time.time() - start) < timeout / 1000:
         token = page.evaluate("() => localStorage.getItem('accessToken')")
         if token:
             log("✅ 检测到 accessToken，登录成功")
             return True
-        # 检查是否有错误提示
-        error = page.locator(".error, .alert, .message:has-text('错误')")
+        # 检查错误信息
+        error = page.locator(".error, .alert, .message:has-text('错误'), .message:has-text('失败')")
         if error.count():
             err_text = error.text_content()
             log(f"❌ 登录失败: {err_text}")
@@ -59,7 +55,7 @@ def wait_for_token(page, timeout=60000):
     return False
 
 def run():
-    log("启动 Agentscope 自动登录（基于 localStorage 检测）")
+    log("启动 Agentscope 自动登录（使用 Enter 提交）")
     if not USERNAME or not PASSWORD:
         log("❌ 请设置 AGENTSCOPE_USERNAME 和 AGENTSCOPE_PASSWORD")
         sys.exit(1)
@@ -76,7 +72,7 @@ def run():
             time.sleep(2)
             screenshot(page, "01_login_page")
 
-            # 先检查是否已经登录（通过 localStorage）
+            # 检查是否已登录
             token = page.evaluate("() => localStorage.getItem('accessToken')")
             if token:
                 log("✅ 已检测到 accessToken，跳过登录")
@@ -92,19 +88,26 @@ def run():
                 log("✅ 已填写密码")
                 screenshot(page, "03_password_filled")
 
-                # 点击登录按钮
-                submit_btn = page.wait_for_selector(
-                    "button:has-text('登录'), button[type='submit']",
-                    timeout=10000
-                )
-                submit_btn.click()
-                log("⏳ 已点击登录按钮，等待 accessToken 出现...")
-                screenshot(page, "04_after_click")
+                # 方式1：按回车键提交（模拟真实用户）
+                log("⏳ 按 Enter 键提交登录...")
+                password_input.press("Enter")
+                screenshot(page, "04_after_enter")
 
+                # 额外尝试：如果按回车无效，再尝试点击登录按钮（作为备选）
+                # 但按 Enter 通常有效，我们先等待检测 token
+                log("⏳ 等待 accessToken 出现...")
                 success = wait_for_token(page, timeout=60000)
                 if not success:
+                    # 如果按回车未成功，尝试点击登录按钮
+                    log("⚠️ Enter 提交未生效，尝试点击登录按钮...")
+                    submit_btn = page.locator("button:has-text('登录'), button[type='submit']")
+                    if submit_btn.count():
+                        submit_btn.click()
+                        log("🔄 已点击登录按钮，再次等待 token...")
+                        success = wait_for_token(page, timeout=30000)
+
+                if not success:
                     screenshot(page, "05_login_failed")
-                    # 打印当前 localStorage 内容
                     storage = page.evaluate("() => localStorage")
                     log(f"当前 localStorage 内容: {storage}")
                     raise RuntimeError("登录超时或失败，未检测到 accessToken")
