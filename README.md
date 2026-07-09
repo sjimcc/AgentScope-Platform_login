@@ -29,14 +29,14 @@ AgentScope Platform每3h检查状态,进行保活
 ACCOUNTS_JSON 
 
 
-        - 
+         - 
           ```json
           [ {"username": "user1@example.com", "password": "pass1"},
             {"username": "user2@example.com", "password": "pass2"},
             {"username": "user3@example.com", "password": "pass3"}
           ]
           ```
-
+         - 
 
 TG_BOT_TOKEN: 1234567890:ABCdefGHIjklMNOpqrsTUVwxyz  #可选
 
@@ -46,12 +46,12 @@ TG_CHAT_ID: 123456789  #可选
 
 ACCOUNTS_JSON   #变量名 必选
 
-        - 
+         - 
           ```json
           [ {"username": "user1@example.com", "password": "pass1"},
             {"username": "user2@example.com", "password": "pass2"},
             {"username": "user3@example.com", "password": "pass3"}
           ]
           ```
-
+         -
   json中username就是用户名,也就是邮箱,password也就是密码
