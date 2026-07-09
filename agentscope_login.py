@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-多账号脚本，并生成详细 Telegram 报告
+多账号脚本  生成详细 Telegram 报告（北京时间）
 """
 import os
 import sys
@@ -8,7 +8,10 @@ import json
 import time
 import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# ---------- 时区设置 ----------
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
 TG_TOKEN = os.getenv("TG_BOT_TOKEN", "")
@@ -26,7 +29,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
 
 def send_tg(msg):
-    """发送 Telegram 消息（纯文本，不使用 HTML）"""
+    """发送 Telegram 消息（纯文本）"""
     if TG_TOKEN and TG_CHAT:
         try:
             requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
@@ -198,15 +201,19 @@ def run():
             log(f"⚠️ 账号 {idx} 缺少用户名或密码，跳过")
             continue
 
-        # 记录开始时间并执行
-        start_time = datetime.now()
+        # 记录开始时间（UTC）
+        start_utc = datetime.now(timezone.utc)
         success = process_account(username, password, idx)
-        end_time = datetime.now()
+        end_utc = datetime.now(timezone.utc)
+
+        # 转换为北京时间
+        beijing_time = end_utc.astimezone(BEIJING_TZ)
+        time_str = beijing_time.strftime("%Y-%m-%d %H:%M:%S")
 
         status_text = "✅ 成功" if success else "❌ 失败"
         account_results.append({
             "username": username,
-            "time": end_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "time": time_str,
             "status": status_text,
             "success": success
         })
