@@ -29,7 +29,7 @@ AgentScope Platform每3h检查状态,进行保活
 ACCOUNTS_JSON 
 
 
-- 
+        - 
           ```json
           [ {"username": "user1@example.com", "password": "pass1"},
             {"username": "user2@example.com", "password": "pass2"},
@@ -46,7 +46,7 @@ TG_CHAT_ID: 123456789  #可选
 
 ACCOUNTS_JSON   #变量名 必选
 
-- 
+        - 
           ```json
           [ {"username": "user1@example.com", "password": "pass1"},
             {"username": "user2@example.com", "password": "pass2"},
